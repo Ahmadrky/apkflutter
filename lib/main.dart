@@ -1,11 +1,43 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const PreslocApp());
 }
 
-class PreslocApp extends StatelessWidget {
+class PreslocApp extends StatefulWidget {
   const PreslocApp({super.key});
+
+  @override
+  State<PreslocApp> createState() => _PreslocAppState();
+}
+
+class _PreslocAppState extends State<PreslocApp> {
+  Widget home =
+      const Scaffold(body: Center(child: CircularProgressIndicator()));
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSession();
+  }
+
+  Future<void> _loadSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final role = prefs.getString('presloc_role');
+    if (!mounted) return;
+    setState(() {
+      home = role == 'Guru BK'
+          ? const GuruShell()
+          : role == 'Siswa'
+              ? const StudentShell()
+              : const LoginScreen();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,7 +50,7 @@ class PreslocApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF8F1828)),
         fontFamily: 'Roboto',
       ),
-      home: const LoginScreen(),
+      home: home,
     );
   }
 }
@@ -33,8 +65,40 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   String role = 'Siswa';
   bool obscurePassword = true;
+  final TextEditingController identityController = TextEditingController();
+  final TextEditingController passwordController = TextEditingController();
 
-  void login() {
+  @override
+  void dispose() {
+    identityController.dispose();
+    passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> login() async {
+    if (identityController.text.trim().isEmpty ||
+        passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Email/NIS dan kata sandi wajib diisi')),
+      );
+      return;
+    }
+    final identity = identityController.text.trim();
+    final password = passwordController.text;
+    final validSiswa =
+        role == 'Siswa' && identity == '0064629105' && password == '123456';
+    final validGuru =
+        role == 'Guru BK' && identity == 'guru@presloc' && password == '123456';
+    if (!validSiswa && !validGuru) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Identitas atau kata sandi tidak valid')),
+      );
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('presloc_role', role);
+    await prefs.setString('presloc_identity', identity);
+    if (!mounted) return;
     final destination =
         role == 'Guru BK' ? const GuruShell() : const StudentShell();
     Navigator.of(context).pushReplacement(
@@ -102,9 +166,10 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 18),
               const _FieldLabel('Email / NIS'),
               const SizedBox(height: 8),
-              const _InputField(
+              _InputField(
                 hint: 'Masukkan Email atau NIS',
                 icon: Icons.person_outline_rounded,
+                controller: identityController,
               ),
               const SizedBox(height: 14),
               const _FieldLabel('Kata Sandi'),
@@ -113,6 +178,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 hint: 'Masukkan kata sandi',
                 icon: Icons.lock_outline_rounded,
                 obscure: obscurePassword,
+                controller: passwordController,
                 suffix: IconButton(
                   onPressed: () =>
                       setState(() => obscurePassword = !obscurePassword),
@@ -316,16 +382,19 @@ class _InputField extends StatelessWidget {
     required this.icon,
     this.obscure = false,
     this.suffix,
+    this.controller,
   });
 
   final String hint;
   final IconData icon;
   final bool obscure;
   final Widget? suffix;
+  final TextEditingController? controller;
 
   @override
   Widget build(BuildContext context) {
     return TextField(
+      controller: controller,
       obscureText: obscure,
       decoration: InputDecoration(
         hintText: hint,
@@ -358,13 +427,24 @@ class StudentShell extends StatefulWidget {
 class _StudentShellState extends State<StudentShell> {
   int index = 0;
 
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('presloc_role');
+    await prefs.remove('presloc_identity');
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    const pages = [
-      StudentHomePage(),
-      AttendancePage(),
-      MapPage(),
-      ProfilePage(),
+    final pages = [
+      const StudentHomePage(),
+      const AttendancePage(),
+      const MapPage(),
+      ProfilePage(onLogout: logout),
     ];
     return Scaffold(
       body: pages[index],
@@ -383,8 +463,15 @@ class _StudentShellState extends State<StudentShell> {
   }
 }
 
-class StudentHomePage extends StatelessWidget {
+class StudentHomePage extends StatefulWidget {
   const StudentHomePage({super.key});
+
+  @override
+  State<StudentHomePage> createState() => _StudentHomePageState();
+}
+
+class _StudentHomePageState extends State<StudentHomePage> {
+  String qrData = 'PRESLOC|0064629105';
 
   @override
   Widget build(BuildContext context) {
@@ -440,7 +527,11 @@ class StudentHomePage extends StatelessWidget {
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: const Color(0xFFE3E5E8)),
                     ),
-                    child: CustomPaint(painter: QrPainter()),
+                    child: QrImageView(
+                      data: qrData,
+                      version: QrVersions.auto,
+                      backgroundColor: Colors.white,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   const Text(
@@ -451,7 +542,16 @@ class StudentHomePage extends StatelessWidget {
                     ),
                   ),
                   TextButton.icon(
-                    onPressed: () {},
+                    onPressed: () {
+                      setState(() {
+                        qrData =
+                            'PRESLOC|0064629105|${DateTime.now().millisecondsSinceEpoch}';
+                      });
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text('Kode QR telah diperbarui')),
+                      );
+                    },
                     icon: const Icon(Icons.refresh_rounded, size: 17),
                     label: const Text('Perbarui Kode QR'),
                   ),
@@ -468,8 +568,9 @@ class StudentHomePage extends StatelessWidget {
 }
 
 class _TopHeader extends StatelessWidget {
-  const _TopHeader({required this.title});
+  const _TopHeader({required this.title, this.onLogout});
   final String title;
+  final VoidCallback? onLogout;
 
   @override
   Widget build(BuildContext context) {
@@ -508,24 +609,35 @@ class _TopHeader extends StatelessWidget {
           ),
         ),
         IconButton(
-          onPressed: () {},
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Tidak ada notifikasi baru')),
+            );
+          },
           icon: const Icon(
             Icons.notifications_none_rounded,
             color: Color(0xFF4E535C),
           ),
         ),
-        const CircleAvatar(
-          radius: 18,
-          backgroundColor: Color(0xFF7D1A27),
-          child: Text(
-            'AF',
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
-              fontSize: 12,
+        if (onLogout != null)
+          IconButton(
+            tooltip: 'Keluar',
+            onPressed: onLogout,
+            icon: const Icon(Icons.logout_rounded, color: Color(0xFF4E535C)),
+          )
+        else
+          const CircleAvatar(
+            radius: 18,
+            backgroundColor: Color(0xFF7D1A27),
+            child: Text(
+              'AF',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+              ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -665,7 +777,7 @@ class _InfoCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE9EBEE)),
       ),
-      child: const Column(
+      child: Column(
         children: [
           Row(
             children: [
@@ -742,14 +854,28 @@ class GuruShell extends StatefulWidget {
 class _GuruShellState extends State<GuruShell> {
   int index = 0;
 
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('presloc_role');
+    await prefs.remove('presloc_identity');
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    const pages = [
-      GuruDashboard(),
-      ScanPage(),
-      MapPage(),
-      AttendancePage(),
-      WarningPage(),
+    final pages = [
+      GuruDashboard(
+        onNavigate: (value) => setState(() => index = value),
+        onLogout: logout,
+      ),
+      const ScanPage(),
+      const MapPage(),
+      const AttendancePage(),
+      const WarningPage(),
     ];
     return Scaffold(
       body: pages[index],
@@ -776,7 +902,14 @@ class _GuruShellState extends State<GuruShell> {
 }
 
 class GuruDashboard extends StatelessWidget {
-  const GuruDashboard({super.key});
+  const GuruDashboard({
+    super.key,
+    required this.onNavigate,
+    required this.onLogout,
+  });
+
+  final ValueChanged<int> onNavigate;
+  final VoidCallback onLogout;
 
   @override
   Widget build(BuildContext context) {
@@ -786,7 +919,7 @@ class GuruDashboard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const _TopHeader(title: 'Dashboard Guru BK'),
+            _TopHeader(title: 'Dashboard Guru BK', onLogout: onLogout),
             const SizedBox(height: 16),
             Container(
               width: double.infinity,
@@ -797,7 +930,7 @@ class GuruDashboard extends StatelessWidget {
                 ),
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: const Column(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('SELAMAT PAGI',
@@ -852,27 +985,31 @@ class GuruDashboard extends StatelessWidget {
               mainAxisSpacing: 10,
               crossAxisSpacing: 10,
               childAspectRatio: 1.28,
-              children: const [
+              children: [
                 _MenuCard(
                     icon: Icons.qr_code_scanner_rounded,
                     title: 'Scan QR Siswa',
                     subtitle: 'Masuk / pulang',
-                    page: 1),
+                    page: 1,
+                    onTap: onNavigate),
                 _MenuCard(
                     icon: Icons.radar_rounded,
                     title: 'Peta Radius',
                     subtitle: 'Pantau lokasi',
-                    page: 2),
+                    page: 2,
+                    onTap: onNavigate),
                 _MenuCard(
                     icon: Icons.assignment_rounded,
                     title: 'Daftar Kehadiran',
                     subtitle: 'Data & rekayasa',
-                    page: 3),
+                    page: 3,
+                    onTap: onNavigate),
                 _MenuCard(
                     icon: Icons.notifications_active_outlined,
                     title: 'Log Peringatan',
                     subtitle: 'Cek status',
-                    page: 4),
+                    page: 4,
+                    onTap: onNavigate),
               ],
             ),
             const SizedBox(height: 12),
@@ -954,17 +1091,19 @@ class _MenuCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.page,
+    required this.onTap,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final int page;
+  final ValueChanged<int> onTap;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: () {},
+      onTap: () => onTap(page),
       child: Container(
         padding: const EdgeInsets.all(13),
         decoration: BoxDecoration(
@@ -1170,18 +1309,37 @@ class QrPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-class AttendancePage extends StatelessWidget {
+class AttendancePage extends StatefulWidget {
   const AttendancePage({super.key});
 
   @override
+  State<AttendancePage> createState() => _AttendancePageState();
+}
+
+class _AttendancePageState extends State<AttendancePage> {
+  final TextEditingController searchController = TextEditingController();
+  String query = '';
+
+  final students = const [
+    ('BP', 'Bagas Pratama', '06:45', 'Presensi', true),
+    ('DN', 'Dina Novita', '06:52', 'Di Luar Area', false),
+    ('FA', 'Fajar Alamsyah', '07:10', 'Belum Absen', null),
+    ('SA', 'Salma Aulia', '06:40', 'Hadir', true),
+    ('RP', 'Rizky Perdana', '07:10', 'Tidak Terpantau', false),
+  ];
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    const students = [
-      ('BP', 'Bagas Pratama', '06:45', 'Presensi', true),
-      ('DN', 'Dina Novita', '06:52', 'Di Luar Area', false),
-      ('FA', 'Fajar Alamsyah', '07:10', 'Belum Absen', null),
-      ('SA', 'Salma Aulia', '06:40', 'Hadir', true),
-      ('RP', 'Rizky Perdana', '07:10', 'Tidak Terpantau', false),
-    ];
+    final filtered = students.where((item) {
+      final normalized = '${item.$1} ${item.$2} ${item.$3}'.toLowerCase();
+      return normalized.contains(query.toLowerCase());
+    }).toList();
     return SafeArea(
       child: Column(
         children: [
@@ -1192,6 +1350,8 @@ class AttendancePage extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 18),
             child: TextField(
+              controller: searchController,
+              onChanged: (value) => setState(() => query = value),
               decoration: InputDecoration(
                 hintText: 'Cari nama atau NIS',
                 prefixIcon: const Icon(Icons.search_rounded),
@@ -1209,10 +1369,10 @@ class AttendancePage extends StatelessWidget {
           Expanded(
             child: ListView.separated(
               padding: const EdgeInsets.symmetric(horizontal: 18),
-              itemCount: students.length,
+              itemCount: filtered.length,
               separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (_, index) {
-                final item = students[index];
+                final item = filtered[index];
                 return Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -1310,8 +1470,181 @@ class _PageHeader extends StatelessWidget {
   }
 }
 
-class ScanPage extends StatelessWidget {
+class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
+
+  @override
+  State<ScanPage> createState() => _ScanPageState();
+}
+
+class _ScanPageState extends State<ScanPage> {
+  String mode = 'Masuk';
+  String scannedIdentity = '';
+  MobileScannerController? scannerController;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      scannerController = MobileScannerController(
+        detectionSpeed: DetectionSpeed.normal,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    scannerController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> confirmAttendance() async {
+    if (scannedIdentity.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pindai QR siswa terlebih dahulu')),
+      );
+      return;
+    }
+    final attendanceTime = TimeOfDay.now().format(context);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('presloc_attendance', scannedIdentity);
+    await prefs.setString('presloc_attendance_mode', mode);
+    await prefs.setString('presloc_attendance_time', attendanceTime);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Presensi $mode berhasil disimpan')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _PageHeader(title: 'Scan QR Siswa'),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => setState(() => mode = 'Masuk'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: mode == 'Masuk'
+                          ? const Color(0xFF8F1828)
+                          : const Color(0xFFB7BAC0),
+                    ),
+                    child: const Text('Masuk'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => setState(() => mode = 'Pulang'),
+                    child: const Text('Pulang'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              height: 300,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: const Color(0xFF30343A),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: scannerController == null
+                  ? const Center(
+                      child: Text(
+                        'Pemindai kamera tersedia pada Android/iOS',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    )
+                  : MobileScanner(
+                      controller: scannerController!,
+                      onDetect: (capture) {
+                        final barcode = capture.barcodes.isEmpty
+                            ? null
+                            : capture.barcodes.first;
+                        final value = barcode?.rawValue;
+                        if (value != null &&
+                            value.contains('PRESLOC') &&
+                            scannedIdentity != value) {
+                          setState(() => scannedIdentity = value);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('QR siswa berhasil dipindai'),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFE9EBEE)),
+              ),
+              child: const Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: Color(0xFFF1D9DE),
+                    child: Text('RN',
+                        style: TextStyle(
+                            color: Color(0xFF7D1A27),
+                            fontWeight: FontWeight.w800)),
+                  ),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Radhya Nugraha',
+                            style: TextStyle(fontWeight: FontWeight.w800)),
+                        Text('XI MPLB 1  •  NIS 0064629105',
+                            style: TextStyle(
+                                color: Color(0xFF858A92), fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: FilledButton(
+                onPressed: confirmAttendance,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF8F1828),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('Konfirmasi Presensi'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/*
+class ScanPageOld extends StatelessWidget {
+  const ScanPageOld({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -1437,8 +1770,54 @@ class ScanPage extends StatelessWidget {
   }
 }
 
-class MapPage extends StatelessWidget {
+*/
+
+class MapPage extends StatefulWidget {
   const MapPage({super.key});
+
+  @override
+  State<MapPage> createState() => _MapPageState();
+}
+
+class _MapPageState extends State<MapPage> {
+  Position? position;
+  bool loadingLocation = false;
+  String locationStatus = 'Lokasi belum diperbarui';
+
+  Future<void> updateLocation() async {
+    setState(() => loadingLocation = true);
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      setState(() {
+        loadingLocation = false;
+        locationStatus = 'Layanan lokasi perangkat tidak aktif';
+      });
+      return;
+    }
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      setState(() {
+        loadingLocation = false;
+        locationStatus = 'Izin lokasi belum diberikan';
+      });
+      return;
+    }
+    final current = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+      ),
+    );
+    if (!mounted) return;
+    setState(() {
+      position = current;
+      loadingLocation = false;
+      locationStatus = 'Lokasi diperbarui ${TimeOfDay.now().format(context)}';
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1491,6 +1870,28 @@ class MapPage extends StatelessWidget {
                     ),
                   ),
                   Positioned(
+                    top: 18,
+                    right: 18,
+                    child: FilledButton.icon(
+                      onPressed: loadingLocation ? null : updateLocation,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF8F1828),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                      icon: loadingLocation
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.my_location, size: 16),
+                      label: const Text('Lokasi'),
+                    ),
+                  ),
+                  Positioned(
                     bottom: 14,
                     left: 14,
                     right: 14,
@@ -1500,7 +1901,7 @@ class MapPage extends StatelessWidget {
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      child: const Column(
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -1539,9 +1940,13 @@ class MapPage extends StatelessWidget {
                             ],
                           ),
                           SizedBox(height: 10),
-                          Text('Jarak ke sekolah: 320 meter',
-                              style: TextStyle(fontWeight: FontWeight.w700)),
-                          Text('Pembaruan terakhir: 07:42 WIB',
+                          Text(
+                              position == null
+                                  ? 'Jarak ke sekolah: 320 meter'
+                                  : 'Jarak ke sekolah: ${Geolocator.distanceBetween(position!.latitude, position!.longitude, -7.797068, 110.370529).round()} meter',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w700)),
+                          Text(locationStatus,
                               style: TextStyle(
                                   color: Color(0xFF858A92), fontSize: 11)),
                         ],
@@ -1671,7 +2076,34 @@ class WarningPage extends StatelessWidget {
                         ),
                       ),
                       TextButton(
-                        onPressed: () {},
+                        onPressed: () {
+                          showModalBottomSheet<void>(
+                            context: context,
+                            shape: const RoundedRectangleBorder(
+                              borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(18),
+                              ),
+                            ),
+                            builder: (_) => Padding(
+                              padding: const EdgeInsets.all(18),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    item.$1,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text('${item.$2}  •  ${item.$3}'),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                         child: const Text('Detail',
                             style: TextStyle(
                                 color: Color(0xFF8F1828),
@@ -1691,7 +2123,9 @@ class WarningPage extends StatelessWidget {
 }
 
 class ProfilePage extends StatelessWidget {
-  const ProfilePage({super.key});
+  const ProfilePage({super.key, required this.onLogout});
+
+  final VoidCallback onLogout;
 
   @override
   Widget build(BuildContext context) {
@@ -1720,7 +2154,7 @@ class ProfilePage extends StatelessWidget {
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: const Column(
+              child: Column(
                 children: [
                   ListTile(
                     leading: Icon(Icons.badge_outlined),
@@ -1737,6 +2171,7 @@ class ProfilePage extends StatelessWidget {
                   ListTile(
                     leading: Icon(Icons.logout_rounded),
                     title: Text('Keluar'),
+                    onTap: onLogout,
                   ),
                 ],
               ),
